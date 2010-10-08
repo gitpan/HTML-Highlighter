@@ -24,9 +24,10 @@ no_index:
     - t
 requires:
   HTML::Parser: 0
+  List::Util: 0
   Plack: 0
   Plack::Request: 0
   perl: 5.8.1
 resources:
   license: http://dev.perl.org/licenses/
-version: 0.02
+version: 0.03

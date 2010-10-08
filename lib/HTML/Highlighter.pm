@@ -6,60 +6,85 @@ use warnings;
 use HTML::Parser;
 use Plack::Request;
 use Plack::Util::Accessor qw/param callback/;
+use List::Util qw/first/;
 
 use parent 'Plack::Middleware';
 
 use 5.008_001;
-our $VERSION = "0.02";
+our $VERSION = "0.03";
 $VERSION = eval $VERSION;
 
 sub call {
   my ($self, $env) = @_;
 
   my $res = $self->app->($env);
-  return $res unless $res->[0] == 200 and $res->[2];
 
-  my $h = Plack::Util::headers($res->[1]);
-  return $res unless $h->get("Content-Type") =~ /html/i;
+  $self->response_cb( $res, sub {
+    my $res = shift;
+    my $h = Plack::Util::headers($res->[1]);
 
-  my $req = Plack::Request->new($env);
+    if ($h->get("Content-Type") =~ /html/i) {
+      $self->callback->($env) if $self->callback;
 
-  $self->callback->($env) if $self->callback;
+      my $req = Plack::Request->new($env);
+      $self->param("highlight") unless $self->param;;
+      my $highlights = do {
+        if ($env->{'psgix.highlight'}) {
+          $env->{'psgix.highlight'};
+        } else {
+          my $param = first {$req->parameters->{$_}} ($self->param, qw/q query search/);
+          $param ? $req->parameters->{$param} : undef;
+        }
+      };
 
-  my $highlights = do {
-    if ($env->{'psgix.highlight'}) {
-      $env->{'psgix.highlight'};
-    } else {
-      $req->parameters->{ $self->param || "highlight" };
-    }
-  };
+      return $res unless $highlights;
+      my @highlights = split /\s+/, $highlights;
 
-  return $res unless $highlights;
-
-  my @highlights = split /\s+/, $highlights;
-
-  my $html;
-  my $p = HTML::Parser->new(
-    api_version => 3,
-    handlers => {
-      default => [ sub { $html .= $_[0] }, "text" ],
-      text => [ 
-        sub { for (@highlights) {
-                $_[0] =~ s/($_)/<span class="highlight">$1<\/span>/gi;
+      my $html;
+      my $p = HTML::Parser->new(
+        api_version => 3,
+        handlers => {
+          default => [
+            sub {
+              $html .= $_[0]
+            }, "text"
+          ],
+          text => [
+            sub {
+              for my $highlight (@highlights) {
+                $_[0] =~ s/($highlight)/<span class="highlight">$1<\/span>/gi;
               }
-              $html .= $_[0] }, "text" ],
-      end_document => [ sub { $res->[2] = [$html];
-                        $h->set('Content-Length' => length $html) }],
+              $html .= $_[0]
+            }, "text"
+          ],
+          end_document => [
+            sub {
+              $res->[2] = [$html];
+              $h->set('Content-Length' => length $html)
+            }
+          ],
+        }
+      );
+
+      my $done;
+
+      return sub {
+        my $chunk = shift;
+        return if $done;
+
+        if (defined $chunk) {
+          $p->parse($chunk);
+          return '';
+        } else {
+          $p->eof;
+          $done = 1;
+          return $html;
+        }
+      };
     }
-  );
 
-  if (ref $res->[2] eq "ARRAY") {
-    Plack::Util::foreach($res->[2], sub { $p->parse($_[0]) });
-  } elsif ($res->[2]->can("getline")) {
-    $p->parse_file($res->[2]);
-  }
-
-  return $res;
+    return $res;
+  });
 }
 
 1;
@@ -95,15 +120,21 @@ HTML::Highlighter - PSGI middleware to highlight text in an HTML response
 
 =head1 DESCRIPTION
 
-The C<HTML::Highlighter> module is a piece of PSGI middleware that will inspect
-an HTML response and highlight parts of the page based on a query parameter or
-other request data. This is very much like what Google does when you load a
-page from their cache. Any text that matches your original query is highlighted.
+The C<HTML::Highlighter> module is a piece of PSGI middleware that
+will inspect an HTML response and highlight parts of the page based
+on a query parameter or other request data. This is very much like
+what Google does when you load a page from their cache. Any text
+that matches your original query is highlighted.
 
     <span class="highlight">[matching text]</span>
 
-This module also includes a javascript file called highlighter.js which gives
-you a class with methods to jump (scroll) through the highlights.
+If no param or callback are provided to C<HTML::Highlighter>, it
+will look for commonly used search parameters (e.g. q, query, search,
+and highlight.)
+
+This module also includes a javascript file called highlighter.js
+which gives you a class with methods to jump (scroll) through the
+highlights.
 
 =head1 CONSTRUCTOR PARAMETERS
 
@@ -112,17 +143,18 @@ you a class with methods to jump (scroll) through the highlights.
 =item B<param>
 
 This option allows you to specify a query parameter to be used for
-the highlighting. For example, if you specify "search" as the param, each
-response will look for a query parameter called "search" will highlight
-that value in the response.
+the highlighting. For example, if you specify "search" as the param,
+each response will look for a query parameter called "search" will
+highlight that value in the response.
 
 =item B<callback>
 
-This option lets you specify a function that will be called on each request
-to generate the text used for highlighting. The function will be passed the
-$env hashref, and should set 'psgix.highlight' on it. This value will be used
-for the highlighting. This could be useful if you want to highlight a username
-that is stored in a session, or something similar.
+This option lets you specify a function that will be called on each
+request to generate the text used for highlighting. The function
+will be passed the $env hashref, and should set 'psgix.highlight'
+on it. This value will be used for the highlighting. This could be
+useful if you want to highlight a username that is stored in a
+session, or something similar.
 
 =back
 
