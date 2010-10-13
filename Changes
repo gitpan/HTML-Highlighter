@@ -1,3 +1,6 @@
+0.04  Oct 13, 2010
+  - handle empty content-type header
+
 0.03  Oct 08, 2010
   - handle all response types by using response_cb
 
